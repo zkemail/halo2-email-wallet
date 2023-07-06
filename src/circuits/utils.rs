@@ -89,7 +89,7 @@ pub(crate) fn slice_last_7bytes_from_u64<'a, F: PrimeField>(
 pub(crate) fn assigned_u64s_to_31bytes_field<'a, 'b: 'a, F: PrimeField>(
     ctx: &mut Context<'b, F>,
     range: &RangeConfig<F>,
-    limbs: &[AssignedValue<'b, F>],
+    limbs: &[AssignedValue<'a, F>],
 ) -> AssignedValue<'a, F> {
     debug_assert_eq!(limbs.len(), 4);
     let gate = range.gate();
@@ -110,7 +110,7 @@ pub(crate) fn assigned_u64s_to_31bytes_field<'a, 'b: 'a, F: PrimeField>(
 pub(crate) fn assigned_bytes_to_31bytes_field<'a, 'b: 'a, F: PrimeField>(
     ctx: &mut Context<'b, F>,
     range: &RangeConfig<F>,
-    bytes: &[AssignedValue<'b, F>],
+    bytes: &[AssignedValue<'a, F>],
 ) -> AssignedValue<'a, F> {
     debug_assert_eq!(bytes.len(), 31);
     let gate = range.gate();
@@ -126,4 +126,24 @@ pub(crate) fn assigned_bytes_to_31bytes_field<'a, 'b: 'a, F: PrimeField>(
         base *= F::from(256);
     }
     sum
+}
+
+pub(crate) fn assign_str<'a, 'b: 'a, F: PrimeField>(
+    ctx: &mut Context<'b, F>,
+    range: &RangeConfig<F>,
+    str: &str,
+    max_bytes: usize,
+) -> Vec<AssignedValue<'a, F>> {
+    let bytes = str.as_bytes();
+    let bytes = vec![bytes, &vec![0u8; max_bytes - bytes.len()]].concat();
+    bytes
+        .into_iter()
+        .map(|byte| {
+            let assigned_byte = range
+                .gate
+                .load_witness(ctx, Value::known(F::from(byte as u64)));
+            range.range_check(ctx, &assigned_byte, 8);
+            assigned_byte
+        })
+        .collect_vec()
 }

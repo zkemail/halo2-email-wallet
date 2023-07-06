@@ -19,7 +19,7 @@ use halo2_zk_email::halo2_regex::*;
 use halo2_zk_email::halo2_rsa::*;
 use halo2_zk_email::regex_sha2::RegexSha2Config;
 use halo2_zk_email::sign_verify::SignVerifyConfig;
-use halo2_zk_email::utils::{get_email_substrs, read_default_circuit_config_params};
+use halo2_zk_email::utils::{get_email_substrs, get_substr, read_default_circuit_config_params};
 use itertools::Itertools;
 use num_bigint::BigUint;
 use num_traits::FromPrimitive;
@@ -436,7 +436,7 @@ impl<F: PrimeField> Circuit<F> for SenderHeaderCircuit<F> {
                 let ctx = &mut config.sha256_config.new_context(region);
                 // let sha256_result = config.sha256_config.digest(ctx, &self.header_bytes)?;
 
-                let range = config.sha256_config.range();
+                let range = config.sha256_config.range().clone();
                 let gate = range.gate();
                 let poseidon = PoseidonChipBn254_8_58::new(ctx, &gate);
 
@@ -457,6 +457,18 @@ impl<F: PrimeField> Circuit<F> for SenderHeaderCircuit<F> {
                     &self.header_bytes,
                 )?;
                 let assigned_header_hash = header_result.hash_bytes;
+                let assigned_from_email_addr =
+                    self.shift_substr(ctx, gate, &header_result.regex, Self::FROM_SUBSTR_ID);
+                let assigned_subject_before_email =
+                    self.shift_substr(ctx, gate, &header_result.regex, Self::SUBJECT_SUBSTR0);
+                let assigned_subject_email_addr =
+                    self.shift_substr(ctx, gate, &header_result.regex, Self::SUBJECT_SUBSTR1);
+                let assigned_subject_after_email =
+                    self.shift_substr(ctx, gate, &header_result.regex, Self::SUBJECT_SUBSTR2);
+
+                // let assigned_subject_emai_addr =
+                //     assign_str(ctx, &range, &subject_email_addr.1, Self::EMAIL_MAX_BYTES);
+
                 // let assigned_from_email_addr = header_result.regex.
 
                 // let assigned_hash_bytes = self
@@ -651,7 +663,85 @@ impl<F: PrimeField> CircuitExt<F> for SenderHeaderCircuit<F> {
     }
 }
 
-// impl<F: PrimeField> SenderRegexSha2Circuit<F> {
-//     pub const DEFAULT_E: u128 = 65537;
-//     pub const LIMB_BITS: usize = 64;
-// }
+impl<F: PrimeField> SenderHeaderCircuit<F> {
+    pub const EMAIL_MAX_BYTES: usize = 256;
+    pub const SUBJECT_MAX_BYTES: usize = 1024;
+    pub const FROM_SUBSTR_ID: u64 = 1;
+    pub const SUBJECT_SUBSTR0: u64 = 2;
+    pub const SUBJECT_SUBSTR1: u64 = 3;
+    pub const SUBJECT_SUBSTR2: u64 = 4;
+    // pub const FROM_REGEX: &'static str = r"(?<=from:).*@.*(?=\r)";
+    // pub const SUBJECT_REGEX: &'static str = r"(?<=subject:).*(?=\r)";
+    // pub const SUBJECT_EMAIL_REGEX: &'static str = r"(a|b|c|d|e|f|g|h|i|j|k|l|m|n|o|p|q|r|s|t|u|v|w|x|y|z|A|B|C|D|E|F|G|H|I|J|K|L|M|N|O|P|Q|R|S|T|U|V|W|X|Y|Z|0|1|2|3|4|5|6|7|8|9|_|\\.|-)+@(a|b|c|d|e|f|g|h|i|j|k|l|m|n|o|p|q|r|s|t|u|v|w|x|y|z|A|B|C|D|E|F|G|H|I|J|K|L|M|N|O|P|Q|R|S|T|U|V|W|X|Y|Z|0|1|2|3|4|5|6|7|8|9|_|\\.|-)+";
+
+    fn shift_substr<'a, 'b: 'a>(
+        &self,
+        ctx: &mut Context<'b, F>,
+        gate: &FlexGateConfig<F>,
+        regex_result: &AssignedRegexResult<'a, F>,
+        target_substr_id: u64,
+    ) -> Vec<AssignedValue<'a, F>> {
+        let mut shift_value = gate.load_zero(ctx);
+        let mut is_target_found = gate.load_zero(ctx);
+        for (idx, assigned_substr_id) in regex_result.all_substr_ids.iter().enumerate() {
+            let is_target = gate.is_equal(
+                ctx,
+                QuantumCell::Existing(assigned_substr_id),
+                QuantumCell::Constant(F::from(target_substr_id)),
+            );
+            is_target_found = gate.select(
+                ctx,
+                QuantumCell::Constant(F::one()),
+                QuantumCell::Existing(&is_target_found),
+                QuantumCell::Existing(&is_target),
+            );
+            shift_value = gate.select(
+                ctx,
+                QuantumCell::Existing(&shift_value),
+                QuantumCell::Constant(F::from((idx + 1) as u64)),
+                QuantumCell::Existing(&is_target_found),
+            );
+        }
+        self.shift_variable(
+            ctx,
+            gate,
+            regex_result.masked_characters.len(),
+            &regex_result.masked_characters,
+            &shift_value,
+        )
+    }
+
+    fn shift_variable<'a, 'b: 'a>(
+        &self,
+        ctx: &mut Context<'b, F>,
+        gate: &FlexGateConfig<F>,
+        max_byte_size: usize,
+        inputs: &[AssignedValue<'a, F>],
+        shift_value: &AssignedValue<'a, F>,
+    ) -> Vec<AssignedValue<'a, F>> {
+        // const MAX_SHIFT_BITS: usize = 64;
+        debug_assert_eq!(inputs.len(), max_byte_size);
+        let max_shift_bits: usize = 64 - max_byte_size.leading_zeros() as usize;
+        let shift_value_bits = gate.num_to_bits(ctx, shift_value, max_shift_bits);
+        let mut prev_tmp = inputs.to_vec();
+        let max_len = inputs.len();
+        let mut new_tmp = (0..max_len)
+            .into_iter()
+            .map(|_| gate.load_zero(ctx))
+            .collect::<Vec<AssignedValue<F>>>();
+        for log_offset in 0..max_shift_bits {
+            for position in 0..max_len {
+                let offset = (position + (1 << log_offset)) % max_len;
+                let value_offset = gate.select(
+                    ctx,
+                    QuantumCell::Existing(&prev_tmp[offset]),
+                    QuantumCell::Existing(&prev_tmp[position]),
+                    QuantumCell::Existing(&shift_value_bits[log_offset]),
+                );
+                new_tmp[position] = value_offset;
+            }
+            prev_tmp = new_tmp.to_vec();
+        }
+        new_tmp
+    }
+}
