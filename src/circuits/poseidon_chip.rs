@@ -301,13 +301,17 @@ impl<F: FieldExt, A: GateInstructions<F>, const T: usize, const RATE: usize>
     }
 }
 
-type PoseidonBn254_4_3 = Poseidon<Fr, 4, 3>;
-pub fn poseidon_hash(bytes: &[u8]) -> Fr {
+// type PoseidonBn254_4_3 = Poseidon<Fr, 4, 3>;
+pub fn poseidon_hash_bytes<F: FieldExt>(bytes: &[u8]) -> F {
     let inputs = bytes
         .into_iter()
-        .map(|byte| Fr::from(*byte as u64))
-        .collect::<Vec<Fr>>();
-    let mut hasher = PoseidonBn254_4_3::new(8, 58);
+        .map(|byte| F::from(*byte as u64))
+        .collect::<Vec<F>>();
+    poseidon_hash(&inputs)
+}
+
+pub fn poseidon_hash<F: FieldExt>(inputs: &[F]) -> F {
+    let mut hasher = Poseidon::<F, 4, 3>::new(8, 58);
     hasher.update(&inputs[..]);
     hasher.squeeze()
 }
